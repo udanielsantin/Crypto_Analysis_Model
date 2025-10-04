@@ -21,14 +21,14 @@ s3 = boto3.client("s3")
 def save_to_s3(message):
     data = json.loads(message)
     df = pd.DataFrame([{
-        "event_time": datetime.datetime.utcfromtimestamp(data["E"] / 1000),
-        "symbol": data["s"],
-        "price": float(data["p"]),
-        "quantity": float(data["q"]),
-        "buyer_order_id": data["b"],
-        "seller_order_id": data["a"],
-        "trade_time": datetime.datetime.utcfromtimestamp(data["T"] / 1000),
-        "is_buyer_maker": data["m"],
+        "event_time": datetime.datetime.utcfromtimestamp(data.get("E", 0) / 1000),
+        "symbol": data.get("s", ""),
+        "price": float(data.get("p", 0)),
+        "quantity": float(data.get("q", 0)),
+        "buyer_order_id": data.get("b", None),
+        "seller_order_id": data.get("a", None),
+        "trade_time": datetime.datetime.utcfromtimestamp(data.get("T", 0) / 1000),
+        "is_buyer_maker": data.get("m", None),
     }])
 
     # Gera o nome do arquivo com timestamp

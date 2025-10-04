@@ -1,78 +1,75 @@
 import json
 import boto3
 import pandas as pd
-from websocket import WebSocketApp
-from datetime import datetime
+import datetime
 import threading
+from websocket import WebSocketApp
 
-# Nome do bucket S3 (troca se for diferente)
+# ========================
+# CONFIGURAÇÕES GERAIS
+# ========================
 BUCKET_NAME = "binance-websocket-stream-data"
+SYMBOL = "btcusdt"  # Par de moedas a ser coletado
+STREAM_URL = f"wss://stream.binance.com:9443/ws/{SYMBOL}@trade"
+
+# Cliente S3
 s3 = boto3.client("s3")
 
-# Buffer de trades em memória
-trade_buffer = []
-lock = threading.Lock()
-
-def save_to_s3():
-    """Acumula trades e salva a cada minuto em Parquet no S3"""
-    global trade_buffer
-
-    while True:
-        now = datetime.utcnow()
-        # Próximo minuto cheio
-        next_minute = (now.replace(second=0, microsecond=0) + pd.Timedelta(minutes=1))
-        wait_seconds = (next_minute - datetime.utcnow()).total_seconds()
-
-        threading.Event().wait(wait_seconds)  # espera até virar o minuto
-
-        with lock:
-            if trade_buffer:
-                df = pd.DataFrame(trade_buffer)
-                trade_buffer = []
-
-                # Caminho no S3 organizado por partição
-                key = (
-                    f"trades/year={now.year}/month={now.month:02d}/day={now.day:02d}/"
-                    f"hour={now.hour:02d}/minute={now.minute:02d}/trades.parquet"
-                )
-
-                # Salva em Parquet
-                parquet_bytes = df.to_parquet(index=False, engine="pyarrow")
-                s3.put_object(Bucket=BUCKET_NAME, Key=key, Body=parquet_bytes)
-
-                print(f"✅ Arquivo salvo no S3: {key} | {len(df)} trades")
-
-def on_message(ws, message):
-    """Recebe trade do WebSocket da Binance"""
-    global trade_buffer
+# ========================
+# FUNÇÃO PARA SALVAR NO S3
+# ========================
+def save_to_s3(message):
     data = json.loads(message)
-
-    trade = {
-        "trade_id": data["t"],
+    df = pd.DataFrame([{
+        "event_time": datetime.datetime.utcfromtimestamp(data["E"] / 1000),
+        "symbol": data["s"],
         "price": float(data["p"]),
-        "qty": float(data["q"]),
-        "timestamp": pd.to_datetime(data["T"], unit="ms"),
-        "is_buyer_maker": data["m"]
-    }
+        "quantity": float(data["q"]),
+        "buyer_order_id": data["b"],
+        "seller_order_id": data["a"],
+        "trade_time": datetime.datetime.utcfromtimestamp(data["T"] / 1000),
+        "is_buyer_maker": data["m"],
+    }])
 
-    with lock:
-        trade_buffer.append(trade)
+    # Gera o nome do arquivo com timestamp
+    timestamp = datetime.datetime.utcnow().strftime("%Y-%m-%d_%H-%M-%S-%f")
+    key = f"btc-trades/{timestamp}.parquet"
+
+    # Converte pra Parquet em memória
+    parquet_bytes = df.to_parquet(index=False, engine="pyarrow")
+
+    # Envia para o S3
+    s3.put_object(Bucket=BUCKET_NAME, Key=key, Body=parquet_bytes)
+
+    print(f"✅ Enviado: {key}")
+
+
+# ========================
+# CALLBACKS DO WEBSOCKET
+# ========================
+def on_message(ws, message):
+    # Roda salvamento em thread separada pra não travar o stream
+    threading.Thread(target=save_to_s3, args=(message,)).start()
+
+def on_error(ws, error):
+    print(f"❌ Erro: {error}")
+
+def on_close(ws, close_status_code, close_msg):
+    print("🔒 Conexão fechada com a Binance")
 
 def on_open(ws):
-    """Abre conexão no WebSocket da Binance"""
     print("🔌 Conectado no WebSocket Binance")
-    payload = {"method": "SUBSCRIBE", "params": ["btcusdt@trade"], "id": 1}
-    ws.send(json.dumps(payload))
 
+
+# ========================
+# MAIN
+# ========================
 if __name__ == "__main__":
-    # Thread que salva os dados no S3 a cada minuto
-    saver_thread = threading.Thread(target=save_to_s3, daemon=True)
-    saver_thread.start()
-
-    # Conexão WebSocket Binance
     ws = WebSocketApp(
-        "wss://stream.binance.com:9443/ws/btcusdt@trade",
+        STREAM_URL,
         on_message=on_message,
-        on_open=on_open
+        on_error=on_error,
+        on_close=on_close
     )
+    ws.on_open = on_open
     ws.run_forever()

@@ -37,27 +37,27 @@ def load_all_trades():
 # FUNÇÃO DE FEATURE ENGINEERING
 # ========================
 def create_features(df):
+    # Target = movimento do próximo trade
     df["price_up_next"] = (df["price"].shift(-1) > df["price"]).astype(int)
-    
-    # Features rolling de 5 trades
+
+    # Rolling features das últimas 5 trades, deslocadas para não vazar info
     df["price_mean_5"] = df["price"].rolling(5, min_periods=1).mean().shift(1)
     df["price_std_5"] = df["price"].rolling(5, min_periods=1).std().shift(1)
     df["quantity_mean_5"] = df["quantity"].rolling(5, min_periods=1).mean().shift(1)
-    
+
     # Seleciona colunas para o modelo e remove NaNs
     df_features = df[["price_mean_5", "price_std_5", "quantity_mean_5", "price_up_next"]].dropna()
-    
-    return df_features
 
+    return df_features
 
 # ========================
 # FUNÇÃO PARA TREINAR MODELO
 # ========================
 def train_model(df):
-    X = df[["price_diff", "price_mean_5", "price_std_5", "quantity_mean_5"]]
-    y = df["price_up"]
+    X = df[["price_mean_5", "price_std_5", "quantity_mean_5"]]
+    y = df["price_up_next"]
 
-    if len(df) < 5:
+    if len(df) < 10:
         print(f"⚠️ Dados muito poucos ({len(df)} linhas) para treinar modelo confiável. Pulando.")
         return None
 
@@ -65,9 +65,11 @@ def train_model(df):
     if len(df) * test_size < 1:
         test_size = 1 / len(df)
 
+    # Shuffle=False para manter sequência temporal
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=test_size, shuffle=False)
 
-    model = RandomForestClassifier(n_estimators=50,max_depth=5, random_state=42)
+    # RandomForest mais simples para evitar overfitting
+    model = RandomForestClassifier(n_estimators=50, max_depth=5, random_state=42)
     model.fit(X_train, y_train)
 
     y_pred = model.predict(X_test)
@@ -101,8 +103,8 @@ def run_loop():
             if df.empty:
                 print("⚠️ Nenhum trade encontrado para treinamento. Pulando ciclo.")
             else:
-                df = create_features(df)
-                model = train_model(df)
+                df_features = create_features(df)
+                model = train_model(df_features)
                 save_model_to_s3(model)
 
         except Exception as e:

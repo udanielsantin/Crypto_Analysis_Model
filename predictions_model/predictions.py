@@ -11,12 +11,15 @@ from sklearn.metrics import accuracy_score, classification_report
 import joblib
 import io
 import os
+import warnings
+
+warnings.filterwarnings("ignore")
 
 # ======================================================
 # 1️⃣ Configurar S3
 # ======================================================
 s3_bucket = "binance-websocket-stream-data"
-s3_prefix = "btc-trades/"  # pasta com os Parquet
+s3_prefix = "btc-trades/"
 
 s3 = boto3.client("s3")
 
@@ -30,16 +33,21 @@ def load_s3_parquet(bucket, prefix, limit=200):
     for obj in objs.get("Contents", [])[:limit]:
         key = obj["Key"]
         if key.endswith(".parquet"):
-            resp = s3.get_object(Bucket=bucket, Key=key)
-            df = pd.read_parquet(io.BytesIO(resp["Body"].read()))
-            df_list.append(df)
+            try:
+                resp = s3.get_object(Bucket=bucket, Key=key)
+                df = pd.read_parquet(io.BytesIO(resp["Body"].read()))
+                if not df.empty:
+                    df_list.append(df)
+            except Exception as e:
+                print(f"⚠️ Erro lendo {key}: {e}")
 
-    if df_list:
-        df = pd.concat(df_list, ignore_index=True)
-        print(f"✅ Total de registros carregados: {len(df)}")
-        return df
-    else:
-        raise ValueError("Nenhum arquivo Parquet encontrado no S3!")
+    if not df_list:
+        raise ValueError("Nenhum arquivo Parquet válido encontrado no S3!")
+
+    df = pd.concat(df_list, ignore_index=True)
+    print(f"✅ Total de registros carregados: {len(df)}")
+    return df
+
 
 df = load_s3_parquet(s3_bucket, s3_prefix)
 
@@ -59,20 +67,22 @@ df = df.sort_values("trade_time").reset_index(drop=True)
 print(f"📅 Período: {df['trade_time'].min()} → {df['trade_time'].max()}")
 
 # ======================================================
-# 4️⃣ Criar candles (testar granularidade)
+# 4️⃣ Criar candles (tentando granularidades diferentes)
 # ======================================================
+df_candle = pd.DataFrame()
 for freq in ["1min", "30s", "10s", "5s"]:
-    df_candle = df.resample(freq, on="trade_time").agg({
+    tmp = df.resample(freq, on="trade_time").agg({
         "price": "ohlc",
         "quantity": "sum"
     }).dropna()
-
-    if len(df_candle) > 10:
+    if len(tmp) >= 5:
+        df_candle = tmp
         print(f"✅ {len(df_candle)} candles gerados com frequência '{freq}'")
         break
 
 if df_candle.empty:
-    raise ValueError("Nenhum candle válido gerado! Verifique timestamps ou frequência de trades.")
+    print("⚠️ Nenhum candle válido gerado! Pode haver poucos dados ainda.")
+    exit(0)
 
 df_candle.columns = ["open", "high", "low", "close", "volume"]
 
@@ -82,12 +92,12 @@ df_candle.columns = ["open", "high", "low", "close", "volume"]
 df_candle["ma_5"] = df_candle["close"].rolling(5).mean()
 df_candle["ma_10"] = df_candle["close"].rolling(10).mean()
 df_candle["ma_20"] = df_candle["close"].rolling(20).mean()
-
 df_candle["target"] = (df_candle["close"].shift(-1) > df_candle["close"]).astype(int)
 df_candle = df_candle.dropna()
 
-if df_candle.empty:
-    raise ValueError("DataFrame vazio depois de criar features e labels!")
+if len(df_candle) < 10:
+    print(f"⚠️ Poucos dados ({len(df_candle)}) depois das features — aguardando mais trades.")
+    exit(0)
 
 # ======================================================
 # 6️⃣ Separar treino/teste

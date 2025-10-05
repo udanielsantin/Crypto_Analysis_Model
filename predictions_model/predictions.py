@@ -6,9 +6,9 @@ from sklearn.model_selection import train_test_split
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import classification_report
 import joblib
-import threading
 from io import BytesIO
 import boto3
+import threading
 
 # ========================
 # CONFIGURAÇÕES
@@ -17,11 +17,10 @@ BUCKET_NAME = "binance-websocket-stream-data"
 TRADES_PREFIX = "btc-trades2/"
 MODEL_PREFIX = "btc-models/"
 RUN_INTERVAL = 5 * 60  # 5 minutos
-
 s3 = boto3.client("s3")
 
 # ========================
-# FUNÇÃO PARA CARREGAR TRADES
+# CARREGAR TRADES DO S3
 # ========================
 def load_all_trades():
     try:
@@ -34,24 +33,22 @@ def load_all_trades():
         return pd.DataFrame()
 
 # ========================
-# FUNÇÃO DE FEATURE ENGINEERING
+# FEATURE ENGINEERING
 # ========================
 def create_features(df):
     # Target = movimento do próximo trade
     df["price_up_next"] = (df["price"].shift(-1) > df["price"]).astype(int)
 
-    # Rolling features das últimas 5 trades, deslocadas para não vazar info
+    # Rolling features das últimas 5 trades, shift para não usar info futura
     df["price_mean_5"] = df["price"].rolling(5, min_periods=1).mean().shift(1)
     df["price_std_5"] = df["price"].rolling(5, min_periods=1).std().shift(1)
     df["quantity_mean_5"] = df["quantity"].rolling(5, min_periods=1).mean().shift(1)
 
-    # Seleciona colunas para o modelo e remove NaNs
     df_features = df[["price_mean_5", "price_std_5", "quantity_mean_5", "price_up_next"]].dropna()
-
     return df_features
 
 # ========================
-# FUNÇÃO PARA TREINAR MODELO
+# TREINAR MODELO
 # ========================
 def train_model(df):
     X = df[["price_mean_5", "price_std_5", "quantity_mean_5"]]
@@ -68,22 +65,22 @@ def train_model(df):
     # Shuffle=False para manter sequência temporal
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=test_size, shuffle=False)
 
-    # RandomForest mais simples para evitar overfitting
+    # RandomForest com tratamento de desbalanceamento
     model = RandomForestClassifier(
-    n_estimators=50,
-    max_depth=5,
-    class_weight='balanced',  # aqui o desbalanceamento é tratado
-    random_state=42
-)
+        n_estimators=50,
+        max_depth=5,
+        class_weight='balanced',
+        random_state=42
+    )
     model.fit(X_train, y_train)
 
     y_pred = model.predict(X_test)
-    print(classification_report(y_test, y_pred))
+    print(classification_report(y_test, y_pred, zero_division=0))
 
     return model
 
 # ========================
-# FUNÇÃO PARA SALVAR MODELO NO S3
+# SALVAR MODELO NO S3
 # ========================
 def save_model_to_s3(model):
     if model is None:
@@ -97,21 +94,45 @@ def save_model_to_s3(model):
     print(f"✅ Modelo salvo em s3://{BUCKET_NAME}/{key}")
 
 # ========================
-# LOOP PRINCIPAL
+# CARREGAR MODELO MAIS RECENTE
+# ========================
+def load_latest_model():
+    keys = [obj['Key'] for obj in s3.list_objects_v2(Bucket=BUCKET_NAME, Prefix=MODEL_PREFIX)['Contents']]
+    latest_model_key = sorted(keys)[-1]
+    obj = s3.get_object(Bucket=BUCKET_NAME, Key=latest_model_key)
+    model_bytes = BytesIO(obj['Body'].read())
+    model = joblib.load(model_bytes)
+    return model
+
+# ========================
+# PREVER PRÓXIMO MOVIMENTO
+# ========================
+def predict_next_move(model, recent_trades_df):
+    df = recent_trades_df.sort_values("trade_time").copy()
+    df["price_mean_5"] = df["price"].rolling(5, min_periods=1).mean().shift(1)
+    df["price_std_5"] = df["price"].rolling(5, min_periods=1).std().shift(1)
+    df["quantity_mean_5"] = df["quantity"].rolling(5, min_periods=1).mean().shift(1)
+    df_features = df[["price_mean_5", "price_std_5", "quantity_mean_5"]].dropna()
+    if df_features.empty:
+        return "Sem dados suficientes"
+    X_last = df_features.iloc[[-1]]
+    pred = model.predict(X_last)[0]
+    return "Subida" if pred == 1 else "Descida"
+
+# ========================
+# LOOP PRINCIPAL DE TREINO
 # ========================
 def run_loop():
     while True:
         try:
             print(f"⏱️ Iniciando ciclo de treino - {datetime.utcnow()}")
             df = load_all_trades()
-            
             if df.empty:
                 print("⚠️ Nenhum trade encontrado para treinamento. Pulando ciclo.")
             else:
                 df_features = create_features(df)
                 model = train_model(df_features)
                 save_model_to_s3(model)
-
         except Exception as e:
             print(f"❌ Erro no ciclo: {e}")
 

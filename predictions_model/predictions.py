@@ -37,18 +37,18 @@ def load_all_trades():
 # FUNÇÃO DE FEATURE ENGINEERING
 # ========================
 def create_features(df):
-    df["price_diff"] = df["price"].diff()
-    df["price_up"] = (df["price_diff"] > 0).astype(int)
-
-    # rolling com min_periods=1 evita NaN nas primeiras linhas
-    df["price_mean_5"] = df["price"].rolling(5, min_periods=1).mean()
-    df["price_std_5"] = df["price"].rolling(5, min_periods=1).std()
-    df["quantity_mean_5"] = df["quantity"].rolling(5, min_periods=1).mean()
-
-    # Só remove NaN das colunas que serão usadas no modelo
-    df_features = df[["price_diff", "price_mean_5", "price_std_5", "quantity_mean_5", "price_up"]].dropna()
+    df["price_up_next"] = (df["price"].shift(-1) > df["price"]).astype(int)
+    
+    # Features rolling de 5 trades
+    df["price_mean_5"] = df["price"].rolling(5, min_periods=1).mean().shift(1)
+    df["price_std_5"] = df["price"].rolling(5, min_periods=1).std().shift(1)
+    df["quantity_mean_5"] = df["quantity"].rolling(5, min_periods=1).mean().shift(1)
+    
+    # Seleciona colunas para o modelo e remove NaNs
+    df_features = df[["price_mean_5", "price_std_5", "quantity_mean_5", "price_up_next"]].dropna()
     
     return df_features
+
 
 # ========================
 # FUNÇÃO PARA TREINAR MODELO
@@ -67,7 +67,7 @@ def train_model(df):
 
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=test_size, shuffle=False)
 
-    model = RandomForestClassifier(n_estimators=100, random_state=42)
+    model = RandomForestClassifier(n_estimators=50,max_depth=5, random_state=42)
     model.fit(X_train, y_train)
 
     y_pred = model.predict(X_test)

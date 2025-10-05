@@ -1,153 +1,113 @@
-# ======================================================
-# prediction.py - Classificação de movimento BTC
-# ======================================================
-
 import boto3
 import pandas as pd
-import numpy as np
+from io import BytesIO
+from datetime import datetime, timedelta
+import time
 from sklearn.model_selection import train_test_split
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import accuracy_score, classification_report
+from sklearn.metrics import classification_report
 import joblib
-import io
-import os
-import warnings
-from datetime import datetime, timedelta
+import threading
 
-warnings.filterwarnings("ignore")
-
-# ======================================================
-# 1️⃣ Configurar S3
-# ======================================================
-s3_bucket = "binance-websocket-stream-data"
-s3_prefix = "btc-trades/"
+# ========================
+# CONFIGURAÇÕES
+# ========================
+BUCKET_NAME = "binance-websocket-stream-data"
+TRADES_PREFIX = "btc-trades2/"
+MODEL_PREFIX = "btc-models/"
+RUN_INTERVAL = 5 * 60  # 5 minutos
 
 s3 = boto3.client("s3")
 
-# ======================================================
-# 2️⃣ Ler arquivos Parquet do S3
-# ======================================================
-def load_s3_parquet(bucket, prefix, limit=200):
-    df_list = []
-    continuation_token = None
-
-    # Datas de ontem e hoje
-    today = datetime.now().date()
+# ========================
+# FUNÇÃO PARA CARREGAR TRADES
+# ========================
+def load_recent_trades(bucket, prefix):
+    today = datetime.utcnow()
     yesterday = today - timedelta(days=1)
-    target_dates = {yesterday.strftime("%Y-%m-%d"), today.strftime("%Y-%m-%d")}
+    dates = [yesterday.strftime("%Y/%m/%d"), today.strftime("%Y/%m/%d")]
 
-    while True:
-        if continuation_token:
-            objs = s3.list_objects_v2(Bucket=bucket, Prefix=prefix, ContinuationToken=continuation_token)
-        else:
-            objs = s3.list_objects_v2(Bucket=bucket, Prefix=prefix)
+    df_list = []
+    for date_path in dates:
+        response = s3.list_objects_v2(Bucket=bucket, Prefix=f"{prefix}{date_path}/")
+        for obj in response.get("Contents", []):
+            obj_data = s3.get_object(Bucket=bucket, Key=obj["Key"])
+            df = pd.read_parquet(BytesIO(obj_data['Body'].read()))
+            df_list.append(df)
 
-        for obj in objs.get("Contents", []):
-            key = obj["Key"]
-            # verifica se a data do arquivo está entre ontem e hoje
-            if any(date in key for date in target_dates) and key.endswith(".parquet"):
-                try:
-                    resp = s3.get_object(Bucket=bucket, Key=key)
-                    df = pd.read_parquet(io.BytesIO(resp["Body"].read()))
-                    if not df.empty:
-                        df_list.append(df)
-                except Exception as e:
-                    print(f"⚠️ Erro lendo {key}: {e}")
+    if df_list:
+        df = pd.concat(df_list, ignore_index=True)
+        df = df.sort_values("trade_time")
+        return df
+    return pd.DataFrame()
 
-        if not objs.get("IsTruncated"):
-            break
+# ========================
+# FUNÇÃO DE FEATURE ENGINEERING
+# ========================
+def create_features(df):
+    df["price_diff"] = df["price"].diff()
+    df["price_up"] = (df["price_diff"] > 0).astype(int)
 
-        continuation_token = objs.get("NextContinuationToken")
+    # Features rolling 5 trades
+    df["price_mean_5"] = df["price"].rolling(5).mean()
+    df["price_std_5"] = df["price"].rolling(5).std()
+    df["quantity_mean_5"] = df["quantity"].rolling(5).mean()
 
-    if not df_list:
-        raise ValueError("Nenhum arquivo Parquet válido encontrado para ontem e hoje!")
-
-    df = pd.concat(df_list, ignore_index=True)
-    print(f"✅ Total de registros carregados: {len(df)}")
+    df = df.dropna()
     return df
 
+# ========================
+# FUNÇÃO PARA TREINAR MODELO
+# ========================
+def train_model(df):
+    X = df[["price_diff", "price_mean_5", "price_std_5", "quantity_mean_5"]]
+    y = df["price_up"]
 
-df = load_s3_parquet(s3_bucket, s3_prefix)
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, shuffle=False)
 
-# ======================================================
-# 3️⃣ Verificar e limpar dados
-# ======================================================
-if "trade_time" not in df.columns:
-    raise ValueError("Coluna 'trade_time' não encontrada nos dados!")
+    model = RandomForestClassifier(n_estimators=100, random_state=42)
+    model.fit(X_train, y_train)
 
-df["trade_time"] = pd.to_datetime(df["trade_time"], errors="coerce")
-df["price"] = pd.to_numeric(df["price"], errors="coerce")
-df["quantity"] = pd.to_numeric(df.get("quantity", 1), errors="coerce")
+    y_pred = model.predict(X_test)
+    print(classification_report(y_test, y_pred))
 
-df = df.dropna(subset=["trade_time", "price"])
-df = df.sort_values("trade_time").reset_index(drop=True)
+    return model
 
-print(f"📅 Período: {df['trade_time'].min()} → {df['trade_time'].max()}")
+# ========================
+# FUNÇÃO PARA SALVAR MODELO NO S3
+# ========================
+def save_model_to_s3(model):
+    timestamp = datetime.utcnow().strftime('%Y-%m-%d_%H-%M')
+    key = f"{MODEL_PREFIX}btc_price_model_{timestamp}.joblib"
+    model_bytes = BytesIO()
+    joblib.dump(model, model_bytes)
+    model_bytes.seek(0)
+    s3.put_object(Bucket=BUCKET_NAME, Key=key, Body=model_bytes.getvalue())
+    print(f"✅ Modelo salvo em s3://{BUCKET_NAME}/{key}")
 
-# ======================================================
-# 4️⃣ Criar candles (tentando granularidades diferentes)
-# ======================================================
-df_candle = pd.DataFrame()
-for freq in ["1min", "30s", "10s", "5s"]:
-    tmp = df.resample(freq, on="trade_time").agg({
-        "price": "ohlc",
-        "quantity": "sum"
-    }).dropna()
-    if len(tmp) >= 5:
-        df_candle = tmp
-        print(f"✅ {len(df_candle)} candles gerados com frequência '{freq}'")
-        break
+# ========================
+# LOOP PRINCIPAL
+# ========================
+def run_loop():
+    while True:
+        try:
+            print(f"⏱️ Iniciando ciclo de treino - {datetime.utcnow()}")
+            df = load_recent_trades(BUCKET_NAME, TRADES_PREFIX)
+            if df.empty:
+                print("⚠️ Nenhum trade encontrado para treinamento")
+            else:
+                df = create_features(df)
+                model = train_model(df)
+                save_model_to_s3(model)
+        except Exception as e:
+            print(f"❌ Erro no ciclo: {e}")
 
-if df_candle.empty:
-    print("⚠️ Nenhum candle válido gerado! Pode haver poucos dados ainda.")
-    exit(0)
+        time.sleep(RUN_INTERVAL)
 
-df_candle.columns = ["open", "high", "low", "close", "volume"]
-
-# ======================================================
-# 5️⃣ Criar features técnicas
-# ======================================================
-df_candle["ma_5"] = df_candle["close"].rolling(5).mean()
-df_candle["ma_10"] = df_candle["close"].rolling(10).mean()
-df_candle["ma_20"] = df_candle["close"].rolling(20).mean()
-df_candle["target"] = (df_candle["close"].shift(-1) > df_candle["close"]).astype(int)
-df_candle = df_candle.dropna()
-
-if len(df_candle) < 10:
-    print(f"⚠️ Poucos dados ({len(df_candle)}) depois das features — aguardando mais trades.")
-    exit(0)
-
-# ======================================================
-# 6️⃣ Separar treino/teste
-# ======================================================
-features = ["open", "high", "low", "close", "volume", "ma_5", "ma_10", "ma_20"]
-X = df_candle[features]
-y = df_candle["target"]
-
-X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, shuffle=False)
-
-# ======================================================
-# 7️⃣ Treinar modelo
-# ======================================================
-model = RandomForestClassifier(n_estimators=100, random_state=42)
-model.fit(X_train, y_train)
-
-y_pred = model.predict(X_test)
-print("🎯 Accuracy:", round(accuracy_score(y_test, y_pred), 3))
-print(classification_report(y_test, y_pred))
-
-# ======================================================
-# 8️⃣ Salvar modelo e previsões no S3
-# ======================================================
-model_file = "binance_movement_model.pkl"
-joblib.dump(model, model_file)
-s3.upload_file(model_file, s3_bucket, "models/binance_movement_model.pkl")
-
-df_pred = X_test.copy()
-df_pred["target"] = y_test
-df_pred["prediction"] = y_pred
-pred_file = "predictions.csv"
-df_pred.to_csv(pred_file, index=False)
-s3.upload_file(pred_file, s3_bucket, "predictions/predictions.csv")
-
-print("✅ Modelo e previsões salvos no S3 com sucesso!")
+# ========================
+# MAIN
+# ========================
+if __name__ == "__main__":
+    run_thread = threading.Thread(target=run_loop, daemon=True)
+    run_thread.start()
+    run_thread.join()

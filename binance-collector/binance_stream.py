@@ -40,9 +40,10 @@ def upload_buffer_to_s3():
             df = pd.DataFrame(trade_buffer)
             trade_buffer = []
 
-        # Gera nome do arquivo com timestamp
-        timestamp = datetime.datetime.utcnow().strftime("%Y-%m-%d_%H-%M-%S")
-        key = f"btc-trades/{timestamp}.parquet"
+        timestamp = datetime.datetime.utcnow()
+        date_path = timestamp.strftime("%Y/%m/%d") 
+        time_str = timestamp.strftime("%H-%M-%S")
+        key = f"btc-trades/{date_path}/{time_str}.parquet"
 
         # Converte para Parquet em memória
         parquet_bytes = df.to_parquet(index=False, engine="pyarrow")

@@ -12,6 +12,7 @@ import joblib
 import io
 import os
 import warnings
+from datetime import datetime, timedelta
 
 warnings.filterwarnings("ignore")
 
@@ -27,22 +28,39 @@ s3 = boto3.client("s3")
 # 2️⃣ Ler arquivos Parquet do S3
 # ======================================================
 def load_s3_parquet(bucket, prefix, limit=200):
-    objs = s3.list_objects_v2(Bucket=bucket, Prefix=prefix)
     df_list = []
+    continuation_token = None
 
-    for obj in objs.get("Contents", [])[:limit]:
-        key = obj["Key"]
-        if key.endswith(".parquet"):
-            try:
-                resp = s3.get_object(Bucket=bucket, Key=key)
-                df = pd.read_parquet(io.BytesIO(resp["Body"].read()))
-                if not df.empty:
-                    df_list.append(df)
-            except Exception as e:
-                print(f"⚠️ Erro lendo {key}: {e}")
+    # Datas de ontem e hoje
+    today = datetime.now().date()
+    yesterday = today - timedelta(days=1)
+    target_dates = {yesterday.strftime("%Y-%m-%d"), today.strftime("%Y-%m-%d")}
+
+    while True:
+        if continuation_token:
+            objs = s3.list_objects_v2(Bucket=bucket, Prefix=prefix, ContinuationToken=continuation_token)
+        else:
+            objs = s3.list_objects_v2(Bucket=bucket, Prefix=prefix)
+
+        for obj in objs.get("Contents", []):
+            key = obj["Key"]
+            # verifica se a data do arquivo está entre ontem e hoje
+            if any(date in key for date in target_dates) and key.endswith(".parquet"):
+                try:
+                    resp = s3.get_object(Bucket=bucket, Key=key)
+                    df = pd.read_parquet(io.BytesIO(resp["Body"].read()))
+                    if not df.empty:
+                        df_list.append(df)
+                except Exception as e:
+                    print(f"⚠️ Erro lendo {key}: {e}")
+
+        if not objs.get("IsTruncated"):
+            break
+
+        continuation_token = objs.get("NextContinuationToken")
 
     if not df_list:
-        raise ValueError("Nenhum arquivo Parquet válido encontrado no S3!")
+        raise ValueError("Nenhum arquivo Parquet válido encontrado para ontem e hoje!")
 
     df = pd.concat(df_list, ignore_index=True)
     print(f"✅ Total de registros carregados: {len(df)}")

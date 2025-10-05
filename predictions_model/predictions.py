@@ -1,6 +1,5 @@
-import boto3
+import awswrangler as wr
 import pandas as pd
-from io import BytesIO
 from datetime import datetime, timedelta
 import time
 from sklearn.model_selection import train_test_split
@@ -8,7 +7,8 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import classification_report
 import joblib
 import threading
-import math
+from io import BytesIO
+import boto3
 
 # ========================
 # CONFIGURAÇÕES
@@ -23,24 +23,27 @@ s3 = boto3.client("s3")
 # ========================
 # FUNÇÃO PARA CARREGAR TRADES
 # ========================
-def load_recent_trades(bucket, prefix):
+def load_recent_trades():
     today = datetime.utcnow()
     yesterday = today - timedelta(days=1)
-    dates = [yesterday.strftime("%Y/%m/%d"), today.strftime("%Y/%m/%d")]
 
-    df_list = []
-    for date_path in dates:
-        response = s3.list_objects_v2(Bucket=bucket, Prefix=f"{prefix}{date_path}/")
-        for obj in response.get("Contents", []):
-            obj_data = s3.get_object(Bucket=bucket, Key=obj["Key"])
-            df = pd.read_parquet(BytesIO(obj_data['Body'].read()))
-            df_list.append(df)
+    # Filtra os dois dias mais recentes
+    partition_filter = lambda x: (
+        x["year"] == str(yesterday.year) and x["month"] == f"{yesterday.month:02}" and x["day"] in [f"{yesterday.day:02}", f"{today.day:02}"]
+    )
 
-    if df_list:
-        df = pd.concat(df_list, ignore_index=True)
+    try:
+        df = wr.s3.read_parquet(
+            path=f"s3://{BUCKET_NAME}/{TRADES_PREFIX}",
+            dataset=True,
+            partition_filter=partition_filter
+        )
         df = df.sort_values("trade_time")
+        print(f"✅ {len(df)} trades carregados do S3")
         return df
-    return pd.DataFrame()
+    except Exception as e:
+        print(f"⚠️ Nenhum trade carregado: {e}")
+        return pd.DataFrame()
 
 # ========================
 # FUNÇÃO DE FEATURE ENGINEERING
@@ -64,12 +67,12 @@ def train_model(df):
     X = df[["price_diff", "price_mean_5", "price_std_5", "quantity_mean_5"]]
     y = df["price_up"]
 
-    # Ajuste seguro do test_size
-    test_size = 0.2
     if len(df) < 5:
         print(f"⚠️ Dados muito poucos ({len(df)} linhas) para treinar modelo confiável. Pulando.")
         return None
-    elif len(df) * test_size < 1:
+
+    test_size = 0.2
+    if len(df) * test_size < 1:
         test_size = 1 / len(df)
 
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=test_size, shuffle=False)
@@ -103,7 +106,7 @@ def run_loop():
     while True:
         try:
             print(f"⏱️ Iniciando ciclo de treino - {datetime.utcnow()}")
-            df = load_recent_trades(BUCKET_NAME, TRADES_PREFIX)
+            df = load_recent_trades()
             
             if df.empty:
                 print("⚠️ Nenhum trade encontrado para treinamento. Pulando ciclo.")

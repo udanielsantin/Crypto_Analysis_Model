@@ -43,7 +43,7 @@ def upload_buffer_to_s3():
         timestamp = datetime.datetime.utcnow()
         date_path = timestamp.strftime("%Y/%m/%d") 
         time_str = timestamp.strftime("%H-%M-%S")
-        key = f"btc-trades/{date_path}/{time_str}.parquet"
+        key = f"btc-trades2/{date_path}/{time_str}.parquet"
 
         # Converte para Parquet em memória
         parquet_bytes = df.to_parquet(index=False, engine="pyarrow")

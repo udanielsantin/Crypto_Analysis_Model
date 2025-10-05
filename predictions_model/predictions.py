@@ -8,6 +8,7 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import classification_report
 import joblib
 import threading
+import math
 
 # ========================
 # CONFIGURAÇÕES
@@ -63,7 +64,15 @@ def train_model(df):
     X = df[["price_diff", "price_mean_5", "price_std_5", "quantity_mean_5"]]
     y = df["price_up"]
 
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, shuffle=False)
+    # Ajuste seguro do test_size
+    test_size = 0.2
+    if len(df) < 5:
+        print(f"⚠️ Dados muito poucos ({len(df)} linhas) para treinar modelo confiável. Pulando.")
+        return None
+    elif len(df) * test_size < 1:
+        test_size = 1 / len(df)
+
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=test_size, shuffle=False)
 
     model = RandomForestClassifier(n_estimators=100, random_state=42)
     model.fit(X_train, y_train)
@@ -77,6 +86,8 @@ def train_model(df):
 # FUNÇÃO PARA SALVAR MODELO NO S3
 # ========================
 def save_model_to_s3(model):
+    if model is None:
+        return
     timestamp = datetime.utcnow().strftime('%Y-%m-%d_%H-%M')
     key = f"{MODEL_PREFIX}btc_price_model_{timestamp}.joblib"
     model_bytes = BytesIO()
@@ -93,12 +104,14 @@ def run_loop():
         try:
             print(f"⏱️ Iniciando ciclo de treino - {datetime.utcnow()}")
             df = load_recent_trades(BUCKET_NAME, TRADES_PREFIX)
+            
             if df.empty:
-                print("⚠️ Nenhum trade encontrado para treinamento")
+                print("⚠️ Nenhum trade encontrado para treinamento. Pulando ciclo.")
             else:
                 df = create_features(df)
                 model = train_model(df)
                 save_model_to_s3(model)
+
         except Exception as e:
             print(f"❌ Erro no ciclo: {e}")
 

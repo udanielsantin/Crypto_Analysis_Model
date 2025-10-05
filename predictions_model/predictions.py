@@ -40,13 +40,15 @@ def create_features(df):
     df["price_diff"] = df["price"].diff()
     df["price_up"] = (df["price_diff"] > 0).astype(int)
 
-    # Features rolling 5 trades
-    df["price_mean_5"] = df["price"].rolling(5).mean()
-    df["price_std_5"] = df["price"].rolling(5).std()
-    df["quantity_mean_5"] = df["quantity"].rolling(5).mean()
+    # rolling com min_periods=1 evita NaN nas primeiras linhas
+    df["price_mean_5"] = df["price"].rolling(5, min_periods=1).mean()
+    df["price_std_5"] = df["price"].rolling(5, min_periods=1).std()
+    df["quantity_mean_5"] = df["quantity"].rolling(5, min_periods=1).mean()
 
-    df = df.dropna()
-    return df
+    # Só remove NaN das colunas que serão usadas no modelo
+    df_features = df[["price_diff", "price_mean_5", "price_std_5", "quantity_mean_5", "price_up"]].dropna()
+    
+    return df_features
 
 # ========================
 # FUNÇÃO PARA TREINAR MODELO

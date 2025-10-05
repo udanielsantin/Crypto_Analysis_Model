@@ -3,6 +3,7 @@ import boto3
 import pandas as pd
 import datetime
 import threading
+import time
 from websocket import WebSocketApp
 
 # ========================
@@ -15,12 +16,48 @@ STREAM_URL = f"wss://stream.binance.com:9443/ws/{SYMBOL}@trade"
 # Cliente S3
 s3 = boto3.client("s3")
 
+# Buffer para armazenar trades temporariamente
+trade_buffer = []
+lock = threading.Lock()
+
+# Intervalo de upload (em segundos)
+UPLOAD_INTERVAL = 5 * 60  # 5 minutos
+
+
 # ========================
 # FUNÇÃO PARA SALVAR NO S3
 # ========================
-def save_to_s3(message):
+def upload_buffer_to_s3():
+    global trade_buffer
+
+    while True:
+        time.sleep(UPLOAD_INTERVAL)
+        with lock:
+            if not trade_buffer:
+                continue
+
+            # Cria DataFrame e limpa o buffer
+            df = pd.DataFrame(trade_buffer)
+            trade_buffer = []
+
+        # Gera nome do arquivo com timestamp
+        timestamp = datetime.datetime.utcnow().strftime("%Y-%m-%d_%H-%M-%S")
+        key = f"btc-trades/{timestamp}.parquet"
+
+        # Converte para Parquet em memória
+        parquet_bytes = df.to_parquet(index=False, engine="pyarrow")
+
+        # Envia para o S3
+        s3.put_object(Bucket=BUCKET_NAME, Key=key, Body=parquet_bytes)
+        print(f"✅ {len(df)} registros enviados para {key}")
+
+
+# ========================
+# CALLBACKS DO WEBSOCKET
+# ========================
+def on_message(ws, message):
     data = json.loads(message)
-    df = pd.DataFrame([{
+    trade = {
         "event_time": datetime.datetime.utcfromtimestamp(data.get("E", 0) / 1000),
         "symbol": data.get("s", ""),
         "price": float(data.get("p", 0)),
@@ -29,27 +66,12 @@ def save_to_s3(message):
         "seller_order_id": data.get("a", None),
         "trade_time": datetime.datetime.utcfromtimestamp(data.get("T", 0) / 1000),
         "is_buyer_maker": data.get("m", None),
-    }])
+    }
 
-    # Gera o nome do arquivo com timestamp
-    timestamp = datetime.datetime.utcnow().strftime("%Y-%m-%d_%H-%M-%S-%f")
-    key = f"btc-trades/{timestamp}.parquet"
+    # Adiciona no buffer com lock (thread-safe)
+    with lock:
+        trade_buffer.append(trade)
 
-    # Converte pra Parquet em memória
-    parquet_bytes = df.to_parquet(index=False, engine="pyarrow")
-
-    # Envia para o S3
-    s3.put_object(Bucket=BUCKET_NAME, Key=key, Body=parquet_bytes)
-
-    print(f"✅ Enviado: {key}")
-
-
-# ========================
-# CALLBACKS DO WEBSOCKET
-# ========================
-def on_message(ws, message):
-    # Roda salvamento em thread separada pra não travar o stream
-    threading.Thread(target=save_to_s3, args=(message,)).start()
 
 def on_error(ws, error):
     print(f"❌ Erro: {error}")
@@ -65,6 +87,11 @@ def on_open(ws):
 # MAIN
 # ========================
 if __name__ == "__main__":
+    # Thread para upload periódico
+    uploader_thread = threading.Thread(target=upload_buffer_to_s3, daemon=True)
+    uploader_thread.start()
+
+    # Conecta ao WebSocket
     ws = WebSocketApp(
         STREAM_URL,
         on_message=on_message,

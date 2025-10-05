@@ -1,6 +1,6 @@
 import awswrangler as wr
 import pandas as pd
-from datetime import datetime, timedelta
+from datetime import datetime
 import time
 from sklearn.model_selection import train_test_split
 from sklearn.ensemble import RandomForestClassifier
@@ -23,21 +23,9 @@ s3 = boto3.client("s3")
 # ========================
 # FUNÇÃO PARA CARREGAR TRADES
 # ========================
-def load_recent_trades():
-    today = datetime.utcnow()
-    yesterday = today - timedelta(days=1)
-
-    # Filtra os dois dias mais recentes
-    partition_filter = lambda x: (
-        x["year"] == str(yesterday.year) and x["month"] == f"{yesterday.month:02}" and x["day"] in [f"{yesterday.day:02}", f"{today.day:02}"]
-    )
-
+def load_all_trades():
     try:
-        df = wr.s3.read_parquet(
-            path=f"s3://{BUCKET_NAME}/{TRADES_PREFIX}",
-            dataset=True,
-            partition_filter=partition_filter
-        )
+        df = wr.s3.read_parquet(f"s3://{BUCKET_NAME}/{TRADES_PREFIX}")
         df = df.sort_values("trade_time")
         print(f"✅ {len(df)} trades carregados do S3")
         return df
@@ -106,7 +94,7 @@ def run_loop():
     while True:
         try:
             print(f"⏱️ Iniciando ciclo de treino - {datetime.utcnow()}")
-            df = load_recent_trades()
+            df = load_all_trades()
             
             if df.empty:
                 print("⚠️ Nenhum trade encontrado para treinamento. Pulando ciclo.")

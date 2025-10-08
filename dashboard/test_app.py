@@ -9,7 +9,7 @@ from datetime import datetime
 import os
 import matplotlib.pyplot as plt
 
-st.title("BTC Price Prediction - 5 Minutos (Teste)")
+st.title("BTC Price Prediction - 5 Minutos")
 
 # ========================
 # CONFIGURAÇÃO AWS

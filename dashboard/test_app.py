@@ -55,7 +55,7 @@ model = load_latest_model(S3_BUCKET, S3_PREFIX)
 today = datetime.utcnow()
 S3_DATA_PREFIX = f"btc-trades2/{today.year:04d}/{today.month:02d}/{today.day:02d}/"
 N = 1000  # número de trades para carregar
-N_DISPLAY = 100  # número de trades para exibir na tabela
+N_DISPLAY = 30  # número de trades para exibir na tabela
 
 def load_latest_parquet(bucket, prefix, n):
     objs = s3.list_objects_v2(Bucket=bucket, Prefix=prefix)
@@ -93,7 +93,7 @@ if df is not None:
     ax.plot(price_by_time["event_time_group"], price_by_time["price"], color="#0074D9", linewidth=2, marker='o', markersize=4)
     ax.set_xlabel("Ano-Mês-Dia Hora:Minuto:Segundo", fontsize=12)
     ax.set_ylabel("Preço (USD)", fontsize=12)
-    ax.set_title("Variação do Preço BTC (últimos 100 trades)", fontsize=14, fontweight="bold")
+    ax.set_title("Variação do Preço BTC (últimos 30 trades)", fontsize=14, fontweight="bold")
     plt.xticks(rotation=45, fontsize=10)
     ax.ticklabel_format(style='plain', axis='y')
     ax.grid(True, linestyle='--', alpha=0.5)

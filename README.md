@@ -37,13 +37,13 @@ A solução é composta por três principais componentes:
 ---
 
 ## 🧩 Estrutura do Projeto
-Crypto_Analysis_Model/
-│
-├── binance-collector/ # Coleta de dados via WebSocket e envio ao S3
-├── predictions_model/ # Código de treino e salvamento do modelo
-├── dashboard/ # Dashboard Streamlit para visualização das previsões
-│
-├── requirements.txt # Dependências Python
-├── render.yaml # Configuração de deploy Render
-├── start.sh # Script de inicialização do Streamlit
-└── README.md
+Crypto_Analysis_Model/  
+│  
+├── binance-collector/ # Coleta de dados via WebSocket e envio ao S3  
+├── predictions_model/ # Código de treino e salvamento do modelo  
+├── dashboard/ # Dashboard Streamlit para visualização das previsões  
+│  
+├── requirements.txt # Dependências Python  
+├── render.yaml # Configuração de deploy Render  
+├── start.sh # Script de inicialização do Streamlit  
+└── README.md  

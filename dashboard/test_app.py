@@ -7,6 +7,7 @@ import boto3
 from io import BytesIO
 from datetime import datetime
 import os
+import matplotlib.pyplot as plt
 
 st.title("BTC Price Prediction - 5 Minutos (Teste)")
 
@@ -42,24 +43,68 @@ def load_latest_model(bucket, prefix):
     response = s3.get_object(Bucket=bucket, Key=key)
     model_bytes = response["Body"].read()
     model = joblib.load(BytesIO(model_bytes))
-    st.success(f"Modelo carregado do S3: {key}")
+    # st.success(f"Modelo carregado do S3: {key}")
     return model
 
 model = load_latest_model(S3_BUCKET, S3_PREFIX)
 
 # ========================
-# SIMULAÇÃO DE TRADES
+# CARREGA OS ÚLTIMOS DADOS DO S3
 # ========================
-N = 20
-now = pd.Timestamp.now()
-df = pd.DataFrame({
-    "trade_time": [now - pd.Timedelta(seconds=5*i) for i in range(N)][::-1],
-    "price": np.random.normal(50000, 50, N),
-    "quantity": np.random.uniform(0.001, 0.01, N)
-})
+# Define o prefixo de dados do S3 de acordo com a data atual
+today = datetime.utcnow()
+S3_DATA_PREFIX = f"btc-trades2/{today.year:04d}/{today.month:02d}/{today.day:02d}/"
+N = 1000  # número de trades para carregar
+N_DISPLAY = 100  # número de trades para exibir na tabela
 
-st.write(f"Total de trades simulados: {len(df)}")
-st.dataframe(df.tail(10))
+def load_latest_parquet(bucket, prefix, n):
+    objs = s3.list_objects_v2(Bucket=bucket, Prefix=prefix)
+    if "Contents" not in objs:
+        st.error("Nenhum arquivo de dados encontrado no S3")
+        return None
+
+    parquet_objs = sorted(
+        [obj for obj in objs["Contents"] if obj["Key"].endswith(".parquet")],
+        key=lambda x: x["Key"],
+        reverse=True
+    )
+    if not parquet_objs:
+        st.error("Nenhum arquivo parquet encontrado")
+        return None
+
+    latest_key = parquet_objs[0]["Key"]
+    response = s3.get_object(Bucket=bucket, Key=latest_key)
+    df = pd.read_parquet(BytesIO(response["Body"].read()))
+    df = df.sort_values("trade_time").tail(n)
+    return df
+
+df = load_latest_parquet(S3_BUCKET, S3_DATA_PREFIX, N)
+if df is not None:
+    df_display = df.tail(N_DISPLAY)
+    st.write(f"Exibindo os últimos {N_DISPLAY} trades:")
+    st.dataframe(df_display)
+
+    # Agrupa por ano-mês-dia-hora-minuto-segundo usando event_time
+    df["event_time"] = pd.to_datetime(df["event_time"])
+    df["event_time_group"] = df["event_time"].dt.strftime("%Y-%m-%d %H:%M:%S")
+    price_by_time = df.groupby("event_time_group")["price"].mean().reset_index()
+
+    # Gráfico
+    fig, ax = plt.subplots(figsize=(12, 4))
+    ax.plot(price_by_time["event_time_group"], price_by_time["price"])
+    ax.set_xlabel("Ano-Mês-Dia Hora:Minuto:Segundo")
+    ax.set_ylabel("Preço Real")
+    ax.set_title("Preço Médio por Event Time (últimos 1000 trades)")
+    plt.xticks(rotation=45)
+    ax.ticklabel_format(style='plain', axis='y')  # Mostra o valor real do preço no eixo Y
+    # Adiciona uma margem de 2% ao preço mínimo e máximo para melhor visualização
+    price_min = price_by_time["price"].min()
+    price_max = price_by_time["price"].max()
+    margin = (price_max - price_min) * 0.02
+    ax.set_ylim(price_min - margin, price_max + margin)
+    st.pyplot(fig)
+else:
+    st.warning("Não foi possível carregar os dados de trades.")
 
 # ========================
 # GERA FEATURES SIMPLES

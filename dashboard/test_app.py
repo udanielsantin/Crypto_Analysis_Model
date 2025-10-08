@@ -88,20 +88,20 @@ if df is not None:
     df["event_time"] = pd.to_datetime(df["event_time"])
     df["event_time_group"] = df["event_time"].dt.strftime("%Y-%m-%d %H:%M:%S")
     price_by_time = df.groupby("event_time_group")["price"].mean().reset_index()
-
-    # Gráfico
+    # Gráfico simples e bonito
     fig, ax = plt.subplots(figsize=(12, 4))
-    ax.plot(price_by_time["event_time_group"], price_by_time["price"])
-    ax.set_xlabel("Ano-Mês-Dia Hora:Minuto:Segundo")
-    ax.set_ylabel("Preço Real")
-    ax.set_title("Preço Médio por Event Time (últimos 1000 trades)")
-    plt.xticks(rotation=45)
-    ax.ticklabel_format(style='plain', axis='y')  # Mostra o valor real do preço no eixo Y
-    # Adiciona uma margem de 2% ao preço mínimo e máximo para melhor visualização
+    ax.plot(price_by_time["event_time_group"], price_by_time["price"], color="#0074D9", linewidth=2, marker='o', markersize=4)
+    ax.set_xlabel("Ano-Mês-Dia Hora:Minuto:Segundo", fontsize=12)
+    ax.set_ylabel("Preço (USD)", fontsize=12)
+    ax.set_title("Variação do Preço BTC (últimos 100 trades)", fontsize=14, fontweight="bold")
+    plt.xticks(rotation=45, fontsize=10)
+    ax.ticklabel_format(style='plain', axis='y')
+    ax.grid(True, linestyle='--', alpha=0.5)
     price_min = price_by_time["price"].min()
     price_max = price_by_time["price"].max()
-    margin = (price_max - price_min) * 0.02
+    margin = (price_max - price_min) * 0.05  # aumentou a margem para 5%
     ax.set_ylim(price_min - margin, price_max + margin)
+    plt.tight_layout()
     st.pyplot(fig)
 else:
     st.warning("Não foi possível carregar os dados de trades.")

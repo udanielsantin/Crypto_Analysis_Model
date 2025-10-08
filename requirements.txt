@@ -4,3 +4,4 @@ numpy
 boto3
 joblib
 scikit-learn
+matplotlib
